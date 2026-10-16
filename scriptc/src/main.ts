@@ -6,13 +6,13 @@
 //   GET /o/:token   open-tracking pixel (1x1 GIF, no-store)
 //   GET /c/:token   click tracking -> 302 redirect (http/https only)
 //
-// Subsequent commits layer on unsubscribe, webhooks, signups, the
-// internal drain, and the SQLite sink swap.
+// Subsequent commits layer on webhooks, signups, the internal drain,
+// and the SQLite sink swap.
 
 import { createRouter } from "@chttp/router";
 import { enqueueEvent } from "./lib/sink.ts";
 import { verifyToken } from "./lib/token.ts";
-import { PIXEL_GIF } from "./lib/pixel.ts";
+import { PIXEL_GIF, UNSUB_PAGE_OK, UNSUB_PAGE_BAD } from "./lib/pixel.ts";
 
 const EDGE_TOKEN_KEY =
   process.env.EDGE_TOKEN_KEY || "dev-only-token-key-32-chars-minimum!";
@@ -74,6 +74,31 @@ app.get("/c/:token", (c) => {
       "\",\"ts\":" + String(Date.now()) + "}"
   );
   return c.redirect(p.d, 302);
+});
+
+// ---- unsubscribe (browser GET + RFC 8058 one-click POST)
+app.get("/unsubscribe/:token", (c) => {
+  const token = c.req.param("token");
+  if (token === null) return c.status(400).html(UNSUB_PAGE_BAD);
+  const p = verifyToken(token, EDGE_TOKEN_KEY, "unsub");
+  if (p === null) return c.status(400).html(UNSUB_PAGE_BAD);
+  enqueueEvent(
+    "{\"t\":\"unsub\",\"m\":\"" + p.m + "\",\"c\":\"" + p.c +
+      "\",\"ts\":" + String(Date.now()) + "}"
+  );
+  return c.html(UNSUB_PAGE_OK);
+});
+
+app.post("/unsubscribe/:token", (c) => {
+  const token = c.req.param("token");
+  if (token === null) return c.status(400).text("bad request");
+  const p = verifyToken(token, EDGE_TOKEN_KEY, "unsub");
+  if (p === null) return c.status(400).text("invalid");
+  enqueueEvent(
+    "{\"t\":\"unsub\",\"m\":\"" + p.m + "\",\"c\":\"" + p.c +
+      "\",\"oneclick\":true,\"ts\":" + String(Date.now()) + "}"
+  );
+  return c.text("OK");
 });
 
 const PORT = Number(process.env.PORT || "8787");
