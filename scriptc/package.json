@@ -1,0 +1,23 @@
+{
+  "name": "@espetro/mailcheap-edge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mailcheap public ingestion edge, compiled from TypeScript subset to a single static ELF.",
+  "type": "module",
+  "scripts": {
+    "coverage": "scriptc coverage src/main.ts",
+    "build": "scriptc build src/main.ts -o edge-bin",
+    "start": "./edge-bin",
+    "install:scripts": "node ./scripts/install-scriptc.mjs"
+  },
+  "dependencies": {
+    "@chttp/router": "^0.3.0",
+    "@chttp/val": "^0.3.0",
+    "@cutils/cache": "^0.3.0",
+    "@cutils/sqlite": "^0.3.0",
+    "scriptc": "^0.3.4"
+  },
+  "allowScripts": {
+    "scriptc@0.3.4": true
+  }
+}
