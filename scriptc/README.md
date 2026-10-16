@@ -1,5 +1,8 @@
 # scriptc edge — Mailcheap carve-out (phase 1)
 
+> [!WARNING]
+> Experimental, and not buildable as committed. `src/lib/sink.ts` calls `prepare(sql)` with one argument where `@cutils/sqlite` 0.3.0 needs `prepareRaw`, and the SQLite sink cannot run from the published packages. Tokens use `EDGE_TOKEN_KEY` and a JSON format, not the app's `BETTER_AUTH_SECRET` format, so links in emails already sent would fail. Measurements and the full list are in [docs/PERF.md](../docs/PERF.md). `bench/edge-mongo/` is the working spike that writes straight to MongoDB with the app's own tokens.
+
 A single static-compiled native binary (`edge-bin`) that owns Mailcheap's
 high-traffic, low-complexity public endpoints, compiled from a strict
 TypeScript subset via
@@ -106,7 +109,6 @@ Environment:
 
 ## Status
 
-Phase 1 in progress. See [`docs/PHASE1.md`](../docs/PHASE1.md) for the
-full migration plan and the parity assessment versus upstream.
+Phase 1 is on hold until the packages it depends on build and run as published. [`docs/PERF.md`](../docs/PERF.md) has the measurements against Next.js, the findings and the revised list of work, and [`docs/PHASE1.md`](../docs/PHASE1.md) has the original plan with the parity rows corrected. Direct MongoDB writes with the app's token format (the spike in `bench/edge-mongo/`) make the SQLite sink, `/internal/events` and `/internal/ack` unnecessary, so those routes are likely to go.
 
 Fork: `espetro/mailcheap` · upstream: `marclou/mailcheap`.
