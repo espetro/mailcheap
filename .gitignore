@@ -47,3 +47,10 @@ next-env.d.ts
 /scriptc/edge-bin
 /scriptc/coverage/
 /scriptc/node_modules/
+
+# bench artifacts
+/bench/out/
+/bench/edge-mongo/vendor/
+/bench/edge-mongo/node_modules/
+/bench/edge-mongo/src/pages.ts
+/bench/edge-mongo/edge-mongo
