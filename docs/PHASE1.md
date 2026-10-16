@@ -1,69 +1,181 @@
 # Mailcheap scriptc rewrite — phase 1 plan
 
 This document captures the carve-out plan for the public ingestion edge
-that lives under [`scriptc/`](../scriptc/). It is a placeholder — the
-final write-up ships in commit 7.
+that lives under [`scriptc/`](../scriptc/). The plan was scaffolded in
+the initial commit and refined through commits 2–6; this is the final
+write-up.
 
-## Scope (phase 1)
+## Scope (phase 1, complete on this branch)
 
 Move the high-traffic, low-complexity endpoints out of the Next.js app
 into a single static-compiled native binary:
 
-| Endpoint | Current owner | New owner |
-|---|---|---|
-| `GET /o/:token` (open pixel) | `app/o/` | scriptc edge |
-| `GET /c/:token` (click) | `app/c/` | scriptc edge |
-| `GET/POST /unsubscribe/:token` | `app/unsubscribe/` | scriptc edge |
-| `POST /webhooks/:provider` | `lib/email-provider/` | scriptc edge (shared-secret receipt) |
-| `POST /api/v1/signups` | `app/api/v1/contacts/` | scriptc edge |
-| `GET /internal/events?after=N` | new (scriptc-only) | scriptc edge |
-| `POST /internal/ack` | new (scriptc-only) | scriptc edge |
+| Endpoint | Current owner | New owner | Notes |
+|---|---|---|---|
+| `GET /o/:token` | `app/o/` | scriptc edge | open pixel |
+| `GET /c/:token` | `app/c/` | scriptc edge | click + redirect (http/https allowlist) |
+| `GET /unsubscribe/:token` | `app/unsubscribe/` | scriptc edge | confirmation page |
+| `POST /unsubscribe/:token` | `app/unsubscribe/` | scriptc edge | RFC 8058 one-click |
+| `POST /webhooks/:provider` | `lib/email-provider/` | scriptc edge | shared-secret receipt (1 MB cap) |
+| `POST /api/v1/signups` | `app/api/v1/contacts/` | scriptc edge | `@chttp/val` strictObject, 10 req/min/IP |
+| `GET /internal/events?after=N` | new (scriptc-only) | scriptc edge | Bearer-auth drain, byte-offset cursor |
+| `POST /internal/ack` | new (scriptc-only) | scriptc edge | Bearer-auth ack; deletes drained rows |
+| `GET /health` | new (scriptc-only) | scriptc edge | liveness + pending gauge |
+| `GET /dev/mint/*`, `GET /dev/check/:token`, `POST /dev/echo` | new (scriptc-only) | scriptc edge | `EDGE_DEV_MINT=1`-gated helpers |
 
 Everything else — the dashboard, auth, billing, campaigns, MCP, jobs —
 stays in the Next.js app. The Next.js app consumes edge events through
 the internal drain API (cursor protocol).
 
-## Why these endpoints
+## Stack
 
-- **Burst traffic**: open/click pixel hits outnumber dashboard hits by
-  ~100×; a static ELF without GC avoids cold starts and tail latency.
-- **Stateless or near-stateless**: HMAC token verify, JSONL append, fixed
-  window — no database round-trips in the request path.
-- **Small surface area**: every endpoint fits in a single
-  `createRouter()` block; ~200 lines of source.
+| Layer | Choice | Why |
+|---|---|---|
+| Compiler | `scriptc` ^0.3.4 | TypeScript subset → native ELF, ~4 MB binary |
+| HTTP | `@chttp/router` ^0.3.0 | `createRouter`, `{ body: true }` opt-in body buffering |
+| Validation | `@chttp/val` ^0.3.0 | Standard Schema, subset-disciplined |
+| Rate limit | `@cutils/cache` ^0.3.0 | LRU + TTL, replaces deprecated `@chttp/cache` |
+| Tokens | `node:crypto` subset | HMAC-SHA256, `timingSafeEqual` |
+| Event sink | `@cutils/sqlite` ^0.3.0 | Embedded SQLite via FFI; cursor protocol compatible with the legacy JSONL implementation |
 
-## Stack constraints
+All of `@chttp/*`, `@cutils/*` and `scriptc` come from the same author
+(sigilco/espetro) and share the scriptc compilable subset — the edge
+ships as one ELF with zero runtime dependencies.
 
-- All `@chttp/*` and `@cutils/*` packages come from sigilco (espetro) and
-  share the scriptc compilable subset — the edge ships as one ELF with
-  zero runtime dependencies.
-- `scriptc 0.3.4` requires `node >=24` (Kimi's archive pinned 0.3.3 and
-  `node >=22`); bump to 0.3.4 in this work because the underlying
-  `@scriptc/compiler` shifted.
-- `@chttp/cache 0.2.0` is deprecated; use `@cutils/cache ^0.3.0`.
+## Subset constraints (do not regress)
 
-## Migration order
+These are real `scriptc 0.3.4` / `@chttp/router` behaviors documented
+during the MVP bring-up; each is the kind of thing that costs a
+debugging round if you forget:
 
-1. chore(fork) — scaffold (this directory, README, .gitignore, AGENTS.md)
-2. feat(edge) — pixel, token, sink libs
-3. feat(edge) — `/o`, `/c` tracking routes + rate-limit helper
-4. feat(edge) — unsubscribe GET/POST (RFC 8058)
-5. feat(edge) — webhooks + signups + drain/ack
-6. feat(edge) — swap JSONL sink for `@cutils/sqlite`
-7. docs(scriptc) — final parity assessment + Next.js handoff notes
+1. `c.req.body()` returns `""` unless the route declares
+   `{ body: true }` as the third arg to `app.post(path, handler, opts)`.
+   Silent by design; surfaces as `invalid_json` on every body-reading
+   route until fixed.
+2. Never pass `c` into a helper typed with an inline object shape
+   (`{ req: { header(n): … } }`) — scriptc erases the method table and
+   the call throws `expected function at $.req.header`. Pass plain
+   strings across function boundaries.
+3. `appendFileSync` is 2-arg under scriptc; no encoding argument. (Not
+   used by this branch — sink.ts is SQLite-only — but applies to any
+   future file write.)
+4. `@cutils/cache` is a phantom generic: annotate the variable
+   (`const c: Cache<string> = new Cache({max, ttl})`), the constructor
+   takes no type argument, and `get()` returns `unknown` — narrow with
+   `typeof` before use.
+5. `@chttp/val` `safeParse` returns `{ success, output, issues }` — the
+   field is `output` (unknown), not `value`; `optionalStr(inner, default)`
+   requires both args.
+6. `@cutils/sqlite` `Stmt.get()` returns `TRow | undefined`; prefer
+   `getOrNull()` to stay subset-strict (no `| undefined` in user code).
+7. `mkdir` calls under scriptc: use the literal `{ recursive: true }`
+   option object — no computed option shape (erases under subset).
 
-Each step verifies the static gate (`scriptc coverage`) and the build
-gate (`scriptc build`) before the next commit lands.
+## Migration order (commit log)
+
+| # | Hash prefix | Subject |
+|---|---|---|
+| 1 | `2b355f4` | `chore(fork): scaffold scriptc/ edge subdir + carve-out plan` |
+| 2 | `a4f409a` | `feat(edge): pixel, token, and JSONL sink libraries` |
+| 3 | `4d43a3e` | `feat(edge): /o/:token and /c/:token tracking routes + rate-limit helper` |
+| 4 | `c96c5e4` | `feat(edge): /unsubscribe GET (browser) and POST (RFC 8058 one-click)` |
+| 5 | `e330046` | `feat(edge): webhooks, signups, internal drain/ack, health, dev helpers` |
+| 6 | `cd5f0c3` | `feat(edge): swap JSONL sink for @cutils/sqlite` |
+
+Each step landed independently and reverted independently.
+
+## Parity assessment vs. upstream `marclou/mailcheap`
+
+| Upstream capability | Edge equivalent | Parity |
+|---|---|---|
+| `app/o/[token]/route.js` open pixel | `GET /o/:token` (200 image/gif, no-store) | full |
+| `app/c/[token]/route.js` click | `GET /c/:token` (302 + http/https allowlist) | full + tighter security |
+| `app/unsubscribe/[token]/page.jsx` confirmation | `GET /unsubscribe/:token` (200 HTML) | full |
+| `app/unsubscribe/[token]/route.js` one-click | `POST /unsubscribe/:token` (200 OK) | full (RFC 8058) |
+| `app/api/webhooks/*` SES/Resend receipt | `POST /webhooks/:provider` (shared-secret) | ⚠️ shared-secret only; provider-specific signature verification (SES SNS cert-chain, Resend svix) is phase 2 |
+| `app/api/v1/contacts/route.js` signups | `POST /api/v1/signups` (strictObject + email) | full for intake contract |
+| `lib/rate-limit.js` Upstash limiter | `lib/ratelimit.ts` `@cutils/cache` fixed-window | ⚠️ semantic parity, per-instance only |
+| `lib/email-events.js` writes | sink cursor drain + ack | ⚠️ pull model replaces QStash push |
+| Auth (Better Auth), dashboard, campaigns, billing, MCP | — | intentionally out of scope for phase 1 |
+
+### Behavior deltas (intentional)
+
+- **Click destination scheme allowlist** — `GET /c/:token` rejects
+  non-`http(s):` destinations with 400 `invalid link`. Upstream allows
+  whatever the link target is. This prevents a token minting bug from
+  being exploitable as an open redirect (XSS via `javascript:` URIs,
+  for example).
+- **Forge-tolerance on `/o/:token`** — forged open tokens still receive
+  the pixel (no oracle leak), but no event is written. Upstream emits
+  an "invalid open" event in that case; the edge stays silent to keep
+  the cursor protocol stable for the drain consumer.
+- **In-process rate limiter** — `@cutils/cache` is per-ELF, not shared
+  across serverless instances. Acceptable while the edge is one
+  process; needs an Upstash REST shim if horizontally scaled.
+- **Pull-based event drain** — replaces QStash push with a QStash cron
+  in the main app pulling `/internal/events?after=N` every N seconds.
+  Adds up to one drain-interval of latency for analytics /
+  suppression-list updates.
+
+### Behavior deltas (unintentional, follow-ups)
+
+- Edge doesn't validate webhook provider names. Phase 2 routes the
+  `/webhooks/:provider` value through the `lib/email-provider`
+  dispatcher on the main app side and 400s for unknown providers.
+- Edge has no cron-rotate / VACUUM pass on the SQLite file. Acceptable
+  for a single-instance deployment; needs a sidecar cron for multi-
+  instance.
+
+## Next.js handoff (what the main app needs to change)
+
+For phase 1 to ship to production, the main app needs:
+
+1. **Token mint parity** — the edge reads tokens minted with
+   `EDGE_TOKEN_KEY`. The upstream `lib/contact-token.js` mints with a
+   different secret. Bridge:
+   `lib/contact-token.js` gains an `EDGE_TOKEN_KEY` env var, mints
+   edge-bound tokens for `/o`, `/c`, `/unsubscribe` URLs only. Other
+   uses (login magic links, etc.) keep the existing secret.
+
+2. **Drain consumer** — add `app/api/worker/drain-edge/route.js` (or a
+   QStash cron at `app/api/cron/drain-edge`) that:
+   - GETs `http://edge:8787/internal/events?after=<last_offset>` with
+     `Authorization: Bearer <DRAIN_SECRET>`
+   - Persists events into `lib/email-events.js` / `lib/analytics.js`
+     exactly as upstream does today
+   - POSTs `/internal/ack` with the new offset once the batch is
+     committed
+   - Records `<last_offset>` in `models/drain-cursor.js`
+
+3. **Click destination migration** — `app/c/[token]/route.js` becomes a
+   thin redirect to `https://<edge-host>/c/<token>`. Same for `app/o/`
+   and `app/unsubscribe/`. Status code parity is preserved.
+
+4. **Webhook fanout** — `lib/email-provider/processor.js` reads
+   `provider` from the new `/webhooks/:provider` event payload and
+   dispatches the existing SES/Resend verification logic on top of
+   the already-buffered raw body.
+
+5. **CORS / origin** — the edge is a separate origin from the main app.
+   Public form posts to `/api/v1/signups` must either proxy through
+   the main app (preserve current CORS) or carry `Access-Control-
+   Allow-Origin` on the edge.
+
+6. **Telemetry** — the edge's `console.log("handler-error: …")` is
+   stdout-only. Wire it to the main app's `lib/alerts.js` via a
+   `lib/telegram.js` hook, or to the existing log drain, in phase 2.
 
 ## Out of scope (later phases)
 
 - Provider-specific webhook signature verification (SES SNS cert-chain,
   Resend svix) — needs platform credentials and DNS, not part of the
   shared-secret receipt.
-- `@chttp/mcp` server surface (REST + MCP parity tests).
+- `@chttp/mcp` server surface (REST + MCP parity tests against
+  `tests/parity.test.mjs`).
 - Public intake cross-instance rate limit (Upstash); current edge is
   per-process.
 - Vendor+patch spike queue (markdown-it, aws4fetch, neosanitize,
-  oauth4webapi, s3mini, cronosjs, parse-domain).
+  oauth4webapi, s3mini, cronosjs, parse-domain) — covered separately
+  as sigilco upstream PRs.
 
-These belong to phase 2+ and are tracked as GitHub issues on the fork.
+These are tracked as GitHub issues on `espetro/mailcheap`.
