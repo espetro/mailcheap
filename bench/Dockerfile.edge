@@ -1,0 +1,14 @@
+FROM node:24 AS build
+RUN apt-get update && apt-get install -y --no-install-recommends clang && rm -rf /var/lib/apt/lists/*
+WORKDIR /repo
+COPY app/c app/c
+WORKDIR /repo/bench/edge-mongo
+COPY bench/edge-mongo/package.json bench/edge-mongo/package-lock.json ./
+RUN npm ci
+COPY bench/edge-mongo/gen-pages.mjs bench/edge-mongo/vendor.mjs ./
+COPY bench/edge-mongo/src/main.ts bench/edge-mongo/src/token.ts src/
+RUN node gen-pages.mjs && node vendor.mjs && npx scriptc build src/main.ts -o /edge-mongo
+
+FROM debian:bookworm-slim
+COPY --from=build /edge-mongo /edge-mongo
+CMD ["/edge-mongo"]

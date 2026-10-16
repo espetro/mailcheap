@@ -1,0 +1,38 @@
+# Bench rig. Mongo has a fixed IP: the ELF's getaddrinfo can't resolve compose service names (ENOTFOUND).
+# Bench rig. Each app gets 1 CPU and 512 MB to model a small VPS. Secrets are throwaway values.
+x-env: &env
+  MONGODB_URI: mongodb://10.77.0.2:27017/bench?directConnection=true
+  MONGODB_DB: bench
+  BETTER_AUTH_SECRET: bench-secret-bench-secret-bench-secret-1234
+  SUPPRESSION_HASH_KEY: bench-suppression-bench-suppression-1234
+  APP_URL: http://localhost:3000
+services:
+  mongo:
+    image: mongo:8
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    ports: ["27200:27017"]
+    networks: { default: { ipv4_address: 10.77.0.2 } }
+  next:
+    build: { context: .., dockerfile: bench/Dockerfile.next }
+    environment: *env
+    ports: ["3100:3000"]
+    cpus: 1
+    mem_limit: 512m
+    profiles: [next]
+  edge:
+    build: { context: .., dockerfile: bench/Dockerfile.edge }
+    environment: { <<: *env, PORT: "8788", SINK: mongo }
+    ports: ["3200:8788"]
+    cpus: 1
+    mem_limit: 512m
+    profiles: [edge]
+  edge-null:
+    build: { context: .., dockerfile: bench/Dockerfile.edge }
+    environment: { <<: *env, PORT: "8788", SINK: none }
+    ports: ["3300:8788"]
+    cpus: 1
+    mem_limit: 512m
+    profiles: [edge-null]
+networks:
+  default:
+    ipam: { config: [{ subnet: 10.77.0.0/24 }] }

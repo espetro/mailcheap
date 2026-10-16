@@ -1,0 +1,7 @@
+node_modules
+.next
+.git
+bench/out
+bench/edge-mongo/node_modules
+bench/edge-mongo/vendor
+scriptc/node_modules
