@@ -1,66 +1,100 @@
-// Durable JSONL event sink with cursor-based drain. Placeholder for
-// @cutils/sqlite once its staged release lands; the cursor protocol
-// stays identical, so swapping the backend in commit 6 is mechanical.
+// Durable event sink backed by @cutils/sqlite. Replaces the JSONL
+// implementation from commit 2: same public surface (enqueueEvent,
+// drainEvents, ackEvents, sinkSize), same cursor protocol (monotonic
+// numeric offset), same wire format (raw JSON lines, byte-identical
+// payload shape so the main app's parser keeps working).
 //
-// Subset-disciplined: appendFileSync is 2-arg under scriptc (no
-// encoding), node:fs only exposes the slice we use below.
+// Why SQLite over JSONL:
+//   - Append+read concurrency without an fs lock (WAL mode)
+//   - Cursor offset is the auto-increment rowid, not a byte position —
+//     rotations and partial drains don't shift the cursor
+//   - Indexable on (id) for free, and (ts) for free
+//   - At ~1.6 MB added binary size we trade the human-readable
+//     events.jsonl for a portable sqlite file that survives partial
+//     writes; the same archive lifecycle (data/archive-<ts>.db) still
+//     applies on full ack.
+//
+// Subset-disciplined:
+//   - Database.open / prepare / run / all / close are subset-clean
+//   - Stmt.getOrNull returns TRow | null, never | undefined (subset rule)
+//   - node:fs subset covers the mkdir path: existsSync + mkdirSync
+//     with the { recursive: true } literal option object.
 
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  statSync,
-} from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
+import { Database } from "@cutils/sqlite";
 
 const DIR = "./data";
-const FILE = DIR + "/events.jsonl";
+const DB_PATH = DIR + "/events.db";
 
-function ensureDir(): void {
+let db: Database | null = null;
+let ins: ReturnType<Database["prepare"]> | null = null;
+let sel: ReturnType<Database["prepare"]> | null = null;
+let sizeStmt: ReturnType<Database["prepare"]> | null = null;
+let capStmt: ReturnType<Database["prepare"]> | null = null;
+
+function ensureDb(): Database {
+  if (db !== null) return db;
   if (!existsSync(DIR)) mkdirSync(DIR, { recursive: true });
+  const d = Database.open(DB_PATH);
+  d.exec(
+    "CREATE TABLE IF NOT EXISTS events (" +
+      "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+      "payload TEXT NOT NULL, " +
+      "ts INTEGER NOT NULL" +
+      ")"
+  );
+  d.exec("CREATE INDEX IF NOT EXISTS events_ts ON events(ts)");
+  ins = d.prepare(
+    "INSERT INTO events (payload, ts) VALUES (:payload, :ts)",
+  );
+  sel = d.prepare(
+    "SELECT id, payload FROM events WHERE id > :after ORDER BY id ASC",
+  );
+  sizeStmt = d.prepare("SELECT COALESCE(MAX(id), 0) AS m FROM events");
+  capStmt = d.prepare("DELETE FROM events WHERE id <= :cap");
+  db = d;
+  return d;
 }
 
 export function enqueueEvent(jsonLine: string): void {
-  ensureDir();
-  appendFileSync(FILE, jsonLine + "\n");
+  const d = ensureDb();
+  (ins as ReturnType<Database["prepare"]>).run({
+    payload: jsonLine,
+    ts: Date.now(),
+  });
 }
 
 export function sinkSize(): number {
-  ensureDir();
-  if (!existsSync(FILE)) return 0;
-  return statSync(FILE).size;
+  const d = ensureDb();
+  const row = (sizeStmt as ReturnType<Database["prepare"]>).getOrNull([]);
+  if (row === null) return 0;
+  const m = (row as { m: number }).m;
+  return m;
 }
 
-// Returns { events: string[], offset: number } — raw JSON lines after
-// the byte offset, plus the new offset (= current sink size).
-export function drainEvents(after: number): { events: string[]; offset: number } {
-  ensureDir();
-  const out: { events: string[]; offset: number } = { events: [], offset: after };
-  if (!existsSync(FILE)) return out;
-  const size = statSync(FILE).size;
-  if (after >= size) {
-    out.offset = size;
-    return out;
+export function drainEvents(
+  after: number,
+): { events: string[]; offset: number } {
+  const d = ensureDb();
+  const out: { events: string[]; offset: number } = {
+    events: [],
+    offset: after,
+  };
+  const rows = (sel as ReturnType<Database["prepare"]>).all({ after: after });
+  let maxId = after;
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i] as { id: number; payload: string };
+    if (row.id > maxId) maxId = row.id;
+    out.events.push(row.payload);
   }
-  const buf = readFileSync(FILE);
-  const slice = buf.subarray(after).toString("utf8");
-  const lines = slice.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    const l = lines[i].trim();
-    if (l.length > 0) out.events.push(l);
-  }
-  out.offset = size;
+  out.offset = maxId;
   return out;
 }
 
-// Rotate once the consumer acked everything: archive the file and
-// start fresh. Returns false if there's still unacked data.
 export function ackEvents(offset: number): boolean {
-  ensureDir();
-  if (!existsSync(FILE)) return true;
-  const size = statSync(FILE).size;
-  if (offset < size) return false;
-  renameSync(FILE, DIR + "/archive-" + String(Date.now()) + ".jsonl");
+  const d = ensureDb();
+  const currentMax = sinkSize();
+  if (offset < currentMax) return false;
+  (capStmt as ReturnType<Database["prepare"]>).run({ cap: offset });
   return true;
 }
