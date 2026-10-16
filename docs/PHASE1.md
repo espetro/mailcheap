@@ -88,12 +88,12 @@ Each step landed independently and reverted independently.
 
 | Upstream capability | Edge equivalent | Parity |
 |---|---|---|
-| `app/o/[token]/route.js` open pixel | `GET /o/:token` (200 image/gif, no-store) | full |
-| `app/c/[token]/route.js` click | `GET /c/:token` (302 + http/https allowlist) | full + tighter security |
-| `app/unsubscribe/[token]/page.jsx` confirmation | `GET /unsubscribe/:token` (200 HTML) | full |
-| `app/unsubscribe/[token]/route.js` one-click | `POST /unsubscribe/:token` (200 OK) | full (RFC 8058) |
-| `app/api/webhooks/*` SES/Resend receipt | `POST /webhooks/:provider` (shared-secret) | ⚠️ shared-secret only; provider-specific signature verification (SES SNS cert-chain, Resend svix) is phase 2 |
-| `app/api/v1/contacts/route.js` signups | `POST /api/v1/signups` (strictObject + email) | full for intake contract |
+| `app/o/[token]/route.js` open pixel | `GET /o/:token` (200 image/gif, no-store) | ⚠️ response shape matches, but the edge reads its own token format (`EDGE_TOKEN_KEY`), so every open link in emails already sent would still be served the pixel with no event recorded; the edge pixel was also 43 bytes against upstream's 42 |
+| `app/c/[token]/route.js` click | `GET /c/:token` (302 + http/https allowlist) | ⚠️ partial: no 404 on malformed tokens, no continue page for unsigned links, no 403 disabled page for blocked accounts, no `HEAD` handling, no scanner detection (`isLikelyScanner`), and a different token format that would 400 every link already sent |
+| `app/unsubscribe/[token]/page.jsx` confirmation | `GET /unsubscribe/:token` (200 HTML) | ⚠️ different token (`lib/unsubscribe.js` signs `{c,n}` with its own HKDF info) and route (`app/unsubscribe/page.js` + `app/api/unsubscribe/route.js`) |
+| `app/unsubscribe/[token]/route.js` one-click | `POST /unsubscribe/:token` (200 OK) | ⚠️ not equivalent: upstream writes the Contact status synchronously and credits the latest campaign, the edge only queues an event for the drain, so a contact can keep receiving a batch that is already going out (compliance risk) |
+| `app/api/webhooks/*` SES/Resend receipt | `POST /webhooks/:provider` (shared-secret) | ⚠️ shared-secret only; upstream's providers are `ses`, `ses-tenants`, `postshiba` and `stripe` (not Resend) and each verifies its own signature |
+| `app/api/v1/contacts/route.js` signups | `POST /api/v1/signups` (strictObject + email) | ⚠️ no upstream counterpart: `/api/v1/signups` does not exist, public signups go through archive server actions |
 | `lib/rate-limit.js` Upstash limiter | `lib/ratelimit.ts` `@cutils/cache` fixed-window | ⚠️ semantic parity, per-instance only |
 | `lib/email-events.js` writes | sink cursor drain + ack | ⚠️ pull model replaces QStash push |
 | Auth (Better Auth), dashboard, campaigns, billing, MCP | — | intentionally out of scope for phase 1 |
@@ -125,6 +125,12 @@ Each step landed independently and reverted independently.
 - Edge has no cron-rotate / VACUUM pass on the SQLite file. Acceptable
   for a single-instance deployment; needs a sidecar cron for multi-
   instance.
+
+### Build and runtime status (measured 2026-10-16)
+
+- The edge as committed does not compile with the published packages: `scriptc/src/lib/sink.ts` calls `prepare(sql)` with one argument, `@cutils/sqlite` 0.3.0 requires a schema there (the schema-less call is `prepareRaw`), and scriptc reports a misleading `SC2013` naming `@chttp/router` for all three packages.
+- With that fixed it builds, but the SQLite sink fails at runtime (`shim_open`, `SC1090`): it needs `--ffi` with the package's vendor manifest and bindings that only exist in the package's TypeScript source, which scriptc 0.3.4 rejects when imported from `node_modules`. `/health` and `/o` return 500.
+- Details and numbers are in [`PERF.md`](PERF.md).
 
 ## Next.js handoff (what the main app needs to change)
 
