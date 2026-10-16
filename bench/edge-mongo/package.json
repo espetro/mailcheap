@@ -1,0 +1,18 @@
+{
+  "name": "@espetro/mailcheap-edge-mongo-spike",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Throwaway benchmark spike: upstream token format + direct Mongo writes through @cutils/mongo. Not shipped.",
+  "type": "module",
+  "scripts": {
+    "build": "scriptc build src/main.ts -o edge-mongo"
+  },
+  "dependencies": {
+    "@chttp/router": "^0.3.0",
+    "@cutils/mongo": "^0.3.0",
+    "scriptc": "^0.3.4"
+  },
+  "allowScripts": {
+    "scriptc@0.3.4": true
+  }
+}

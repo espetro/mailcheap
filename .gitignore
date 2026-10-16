@@ -41,3 +41,16 @@ yarn-error.log*
 next-env.d.ts
 
 !.env.example
+
+# scriptc edge (mailcheap-elf)
+/scriptc/data/
+/scriptc/edge-bin
+/scriptc/coverage/
+/scriptc/node_modules/
+
+# bench artifacts
+/bench/out/
+/bench/edge-mongo/vendor/
+/bench/edge-mongo/node_modules/
+/bench/edge-mongo/src/pages.ts
+/bench/edge-mongo/edge-mongo

@@ -60,3 +60,27 @@ npm run build
 ```
 
 Tests import server actions and route handlers as they are; `tests/setup` stubs Next.js request APIs and every outside service, so nothing reaches the network. A change to behavior comes with its test, and the full suite and lint pass before it's pushed.
+
+## scriptc edge addendum (espetro/mailcheap fork only)
+
+This fork (`espetro/mailcheap`, branch `fork/scriptc-phase-1`) adds a
+sub-ELF under `scriptc/` that owns the high-traffic public endpoints
+(`/o/:token`, `/c/:token`, `/unsubscribe/:token`, `/api/v1/signups`,
+`/webhooks/:provider`, plus the internal event drain) compiled from a
+TypeScript subset via [`scriptc`](https://github.com/vercel-labs/scriptc).
+
+- The Next.js app stays authoritative for the dashboard, auth, billing,
+  campaigns, MCP, jobs, and the public marketing site. See
+  [`docs/PHASE1.md`](docs/PHASE1.md) for the carve-out plan.
+- Tokens for the edge are minted by the Next.js app at send time (the
+  edge shares `EDGE_TOKEN_KEY`).
+- The edge never reads the user DB. It appends events to a local sink;
+  the Next.js app drains them through `/internal/events` and acks via
+  `/internal/ack`.
+- Phase 1 is intentionally limited to public ingestion; provider
+  signature verification, the public REST + MCP surface, and the
+  Upstash rate-limit store are tracked as later phases.
+- Source for the edge lives at `scriptc/src/`; build/run instructions
+  and the subset-gotcha list are at `scriptc/README.md`.
+- Code style inside `scriptc/src/` is TypeScript; everything else in
+  this repo remains JavaScript per the upstream rule.

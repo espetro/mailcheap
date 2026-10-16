@@ -1,0 +1,13 @@
+FROM node:24-slim AS build
+WORKDIR /repo
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+ENV BETTER_AUTH_SECRET=build-time-placeholder-build-time-placeholder-12 SUPPRESSION_HASH_KEY=build-time-placeholder-build-time-placeholder-12
+RUN npm run build
+
+FROM node:24-slim
+WORKDIR /repo
+ENV NODE_ENV=production
+COPY --from=build /repo /repo
+CMD ["npm", "start"]
