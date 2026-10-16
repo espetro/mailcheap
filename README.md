@@ -30,6 +30,9 @@
 
 MailCheap is a newsletter app: write an issue, send it to your list, publish it on the web, from the dashboard or from your AI agent. This repository is the whole app. Self-host it with your own Amazon SES or PostShiba account, or use [MailCheap Cloud](https://mailcheap.ai), which runs this same code.
 
+> [!NOTE]
+> This is a fork of [marclou/mailcheap](https://github.com/marclou/mailcheap), kept by [espetro](https://github.com/espetro). The app is the same code under the same AGPL-3.0 license. The fork adds an experimental native edge for the public tracking endpoints (opens, clicks, unsubscribes), compiled from TypeScript with [scriptc](https://github.com/vercel-labs/scriptc), plus a benchmark rig and the measurements behind it: [docs/PERF.md](docs/PERF.md). It isn't affiliated with MailCheap Cloud, and issues are on here for the fork's own work, not for the upstream project.
+
 ## Features
 
 - **AI agents and the dashboard.** Everything the dashboard does also works from an AI agent through the MCP server, and from code through the REST API, with the same checks and limits. ChatGPT, Claude and Grok Bot connect with OAuth; Claude Code, Codex and Cursor with an API key. MCP marks sending as an action that can't be undone, so agents ask you first.
@@ -64,7 +67,7 @@ All names and addresses in the screenshots are made up.
 | Who signs in | Anyone who signs up | The emails you allow |
 | Limits | Emails a month and active subscribers, by plan | None |
 | Setup | A few minutes | About an hour, most of it waiting for DNS and production access |
-| Support | A chat in the dashboard | None: issues are off |
+| Support | A chat in the dashboard | None. Issues on this fork are for the fork's own work |
 
 MailCheap Cloud is this repository with `MAILCHEAP_CLOUD=true`, which adds open sign-up, plans and Stripe billing. Only active subscribers count toward a plan, not the ones list cleanup marked dormant. Its marketing site (the landing, pricing and legal pages) isn't part of the open source. Every change to the app ships to both.
 
@@ -74,7 +77,7 @@ With your own sending account, you pay your provider for the emails you send: 10
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fmarclou%2Fmailcheap&project-name=mailcheap&repository-name=mailcheap&env=MONGODB_URI,BETTER_AUTH_SECRET,SUPPRESSION_HASH_KEY,ADMIN_EMAILS,EMAIL_FROM&envDescription=Database%2C%20a%20signing%20secret%20and%20a%20hash%20key%20%2832%2B%20characters%20each%3A%20openssl%20rand%20-base64%2048%29%2C%20your%20email%20to%20sign%20in%20with%2C%20and%20the%20from%20address%20of%20sign-in%20codes.%20Add%20RESEND_API_KEY%2C%20or%20set%20up%20SES%20or%20PostShiba%2C%20so%20the%20codes%20can%20reach%20you.&envLink=https%3A%2F%2Fgithub.com%2Fmarclou%2Fmailcheap%23environment-variables)
 
-Plan for about an hour, most of it waiting for DNS and for your provider to approve production sending. Self-hosting comes without support: issues are off and setup questions go unanswered.
+Plan for about an hour, most of it waiting for DNS and for your provider to approve production sending. Self-hosting comes without support: setup questions go unanswered. Issues on this fork are for the fork's own work (the edge and its benchmarks).
 
 ### What you need
 
@@ -87,6 +90,7 @@ Plan for about an hour, most of it waiting for DNS and for your provider to appr
 | [Resend](https://resend.com) (optional) | Sign-in codes and alerts. Without it, they go through SES or PostShiba | Free plan works |
 | [Upstash Redis](https://upstash.com/docs/redis) (optional) | Rate limits shared by every server instance | Free tier |
 | [Amazon S3](https://aws.amazon.com/s3/) with [CloudFront](https://aws.amazon.com/cloudfront/), or [Vercel Blob](https://vercel.com/docs/vercel-blob) (optional) | Image uploads in the editor, the newsletter settings and the API | S3 and CloudFront: pay per use. Blob: free tier |
+| [Edge ELF](#edge-elf-experimental) (optional, this fork) | A native binary for `/o`, `/c` and unsubscribe, run next to the app | Free. Not usable yet, see below |
 
 Without Redis, MailCheap counts the same rate limits in each server instance's memory. That still stops a script hammering a form, but on serverless hosts the limits aren't shared between instances and reset on each deploy. Add Redis before you put a signup form on a busy site. Without S3 or Blob, image uploads are off; HTML and Markdown campaigns can still use images hosted anywhere.
 
@@ -246,6 +250,14 @@ QStash calls `APP_URL/api/jobs/...` to send each batch, so the app has to be rea
 - **Shared rate limits.** Create a Redis database in the [Upstash console](https://console.upstash.com/redis) and add `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
 - **Alerts on Telegram.** Every admin alert is an email to `ADMIN_EMAILS`. The ones that need someone (an automatic account block, the email provider refusing MailCheap's sends or holding a tenant, Gmail's spam rate for the domain reaching 0.1% or Postmaster Tools refusing the connection, sign-in codes, Stripe events, webhooks or background jobs failing, QStash refusing jobs, shared addresses and the DNS helper) can reach Telegram too: create a bot with [@BotFather](https://t.me/BotFather), send it a message, and set `TELEGRAM_BOT_TOKEN` and the chat's id as `TELEGRAM_CHAT_ID`. Each alert goes there at most once every 6 hours. On PostShiba, have a scheduler call `/api/cron/hourly` every hour with `Authorization: Bearer <CRON_SECRET>` (Vercel Cron sends it once `CRON_SECRET` is set): it checks the team's status (a suspension, the approval, clusters at their cap, held tenants) and alerts on what stops sending. Its first run with Telegram set up posts "Telegram alerts are on".
 - **Shared domain.** `SHARED_DOMAIN` is how MailCheap Cloud gives every newsletter without a domain of its own an address, `hello@<slug>.SHARED_DOMAIN`, and its website at `<slug>.SHARED_DOMAIN`. MailCheap adds each subdomain at the provider and has its records published, and removed when the slug changes, by a DNS helper (`DNS_BROKER_URL`, `DNS_BROKER_SECRET`): on MailCheap Cloud a Vercel project of its own that holds the Vercel token, so the app never does, and only writes a shared address's records. The helper isn't part of this repository, and without one DNS automation is off and shared addresses can't be set up. Its DNS has to be on Vercel, with `*.SHARED_DOMAIN` on the project. Add one DMARC record for the whole domain yourself: `_dmarc.SHARED_DOMAIN` TXT `v=DMARC1; p=none;`. It can be the app's own domain, as MailCheap Cloud's is `mailcheap.ai`: slugs can't take `www` or the other names in `lib/reserved-slugs.js`, and those hosts never open a website.
+- **Edge ELF (this fork, experimental).** `scriptc/` holds a native binary that would answer the public tracking endpoints (`/o/:token`, `/c/:token`, one-click unsubscribe) and leave the dashboard, auth, billing, campaigns, MCP and jobs to Next.js. It is not ready to serve traffic: it doesn't build or run from the published `@chttp/*` and `@cutils/*` packages without patches, its token format isn't the app's, and its `/c` and unsubscribe behavior differs from the app's (see [docs/PHASE1.md](docs/PHASE1.md)). Leave it off for now: nothing in the app needs it, and the Next.js routes keep serving opens, clicks and unsubscribes.
+
+  What exists today:
+  1. `scriptc/` is the Phase 1 edge. Build instructions and the subset gotchas are in [scriptc/README.md](scriptc/README.md).
+  2. `bench/` is the Docker rig (`bench/run.sh`, `bench/matrix.sh`, `bench/parity.sh`) and `bench/edge-mongo/`, a spike that writes straight to MongoDB with the app's own token format. It needs patches to a vendored copy of `@cutils/mongo`, and it leaks memory on the open path.
+  3. [docs/PERF.md](docs/PERF.md) has the measurements against Next.js (one CPU, 512 MB, macOS host Docker, so indicative), the findings and what has to be fixed before it can run in production.
+
+  When it is ready, the plan is to run the binary on the same host as the app behind a reverse proxy that sends `/o/*`, `/c/*` and `/unsubscribe/*` to it and everything else to Next.js, with the same `BETTER_AUTH_SECRET` and `MONGODB_URI`. Don't route production traffic to it before then: the spike's measurements are in the PERF doc.
 
 ### Sending well
 
@@ -311,7 +323,7 @@ ChatGPT, Claude and Grok Bot add `https://<your-app>/mcp` as a connector or cust
 
 ## Contributing
 
-Read [AGENTS.md](AGENTS.md) first, whether you're a person or an AI agent: how the app is organized, MailCheap Cloud and self-hosting, the rules (no secrets or personal data in code, tests or commits), code style and tests. [SECURITY.md](SECURITY.md) covers what's built in and the known gaps. Issues are off, and pull requests may not be reviewed.
+Read [AGENTS.md](AGENTS.md) first, whether you're a person or an AI agent: how the app is organized, MailCheap Cloud and self-hosting, the rules (no secrets or personal data in code, tests or commits), code style and tests. [SECURITY.md](SECURITY.md) covers what's built in and the known gaps. Issues on this fork are open for the edge and its benchmarks; pull requests to the app itself may not be reviewed.
 
 You need Node.js 22+ and MongoDB:
 
