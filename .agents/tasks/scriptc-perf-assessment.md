@@ -1,6 +1,6 @@
 # scriptc perf assessment
 
-Local task: issues are disabled on espetro/mailcheap. Swap for a GitHub issue link once enabled.
+Ticket: https://github.com/espetro/mailcheap/issues/1
 
 Plan: [.agents/plans/2026-10-16-scriptc-perf-assessment.md](../plans/2026-10-16-scriptc-perf-assessment.md)
 
